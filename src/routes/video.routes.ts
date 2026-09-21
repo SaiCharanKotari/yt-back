@@ -132,6 +132,10 @@ router.get('/hls-proxy', async (req: Request, res: Response) => {
         if (resolved.includes('.m3u8')) {
           return `${host}/api/video/hls-proxy?url=${encodeURIComponent(resolved)}`;
         }
+        // Direct Twitch CloudFront / Usher media segments bypass proxy for 0-bandwidth & zero-socket-abort
+        if (resolved.includes('cloudfront.net') || resolved.includes('ttvnw.net')) {
+          return resolved;
+        }
         return `${host}/api/video/proxy-stream?url=${encodeURIComponent(resolved)}`;
       } catch {
         return line;
@@ -239,6 +243,22 @@ router.get('/proxy', async (req: Request, res: Response) => {
 
     // @ts-ignore
     const nodeStream = Readable.fromWeb(response.body);
+    nodeStream.on('error', (streamErr: any) => {
+      // Gracefully consume socket close / abort without crashing process
+      if (streamErr?.code !== 'UND_ERR_SOCKET' && !streamErr?.message?.includes('closed') && !streamErr?.message?.includes('aborted')) {
+        console.warn('[Proxy Stream Notice]', streamErr.message);
+      }
+      try { nodeStream.destroy(); } catch {}
+    });
+
+    req.on('close', () => {
+      try { nodeStream.destroy(); } catch {}
+    });
+
+    res.on('error', () => {
+      try { nodeStream.destroy(); } catch {}
+    });
+
     nodeStream.pipe(res);
   } catch (err: any) {
     if (!res.headersSent) res.status(500).json({ error: err.message });
@@ -419,6 +439,9 @@ router.get('/proxy-stream', async (req: Request, res: Response) => {
           if (absUrl.includes('.m3u8')) {
             return `${host}/api/video/hls-proxy?url=${encodeURIComponent(absUrl)}`;
           }
+          if (absUrl.includes('cloudfront.net') || absUrl.includes('ttvnw.net')) {
+            return absUrl;
+          }
           return `${host}/api/video/proxy-stream?url=${encodeURIComponent(absUrl)}`;
         } catch {
           return line;
@@ -467,6 +490,22 @@ router.get('/proxy-stream', async (req: Request, res: Response) => {
 
     const { Readable } = await import('stream');
     const nodeStream = Readable.fromWeb(remoteRes.body as any);
+
+    nodeStream.on('error', (streamErr: any) => {
+      if (streamErr?.code !== 'UND_ERR_SOCKET' && !streamErr?.message?.includes('closed') && !streamErr?.message?.includes('aborted')) {
+        console.warn('[Proxy Stream Notice]', streamErr.message);
+      }
+      try { nodeStream.destroy(); } catch {}
+    });
+
+    req.on('close', () => {
+      try { nodeStream.destroy(); } catch {}
+    });
+
+    res.on('error', () => {
+      try { nodeStream.destroy(); } catch {}
+    });
+
     nodeStream.pipe(res);
   } catch (err: any) {
     console.error('[Proxy Stream Error ❌]', err.message);
