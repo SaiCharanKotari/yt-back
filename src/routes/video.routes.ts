@@ -118,6 +118,11 @@ router.get('/hls-proxy', async (req: Request, res: Response) => {
         });
       }
 
+      // Convert playlist type to VOD so hls.js treats it as a static seekable timeline from 0
+      if (trimmed.startsWith('#EXT-X-PLAYLIST-TYPE:')) {
+        return '#EXT-X-PLAYLIST-TYPE:VOD';
+      }
+
       // Comment or tag
       if (trimmed.startsWith('#')) return line;
 
@@ -132,6 +137,20 @@ router.get('/hls-proxy', async (req: Request, res: Response) => {
         return line;
       }
     });
+
+    // For media playlists (contains segments), ensure it has #EXT-X-PLAYLIST-TYPE:VOD and #EXT-X-ENDLIST
+    // so hls.js treats it as a complete VOD from time 0 to current duration, never snapping to live edge
+    const hasSegments = rewrittenLines.some((l) => !l.startsWith('#') && l.trim().length > 0);
+    if (hasSegments) {
+      const hasPlaylistType = rewrittenLines.some((l) => l.startsWith('#EXT-X-PLAYLIST-TYPE:'));
+      if (!hasPlaylistType) {
+        rewrittenLines.splice(1, 0, '#EXT-X-PLAYLIST-TYPE:VOD');
+      }
+      const hasEndList = rewrittenLines.some((l) => l.trim() === '#EXT-X-ENDLIST');
+      if (!hasEndList) {
+        rewrittenLines.push('#EXT-X-ENDLIST');
+      }
+    }
 
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -381,6 +400,9 @@ router.get('/proxy-stream', async (req: Request, res: Response) => {
 
         // Rewrite URI="..." in tags (e.g. #EXT-X-KEY, #EXT-X-MAP, etc.)
         if (trimmed.startsWith('#')) {
+          if (trimmed.startsWith('#EXT-X-PLAYLIST-TYPE:')) {
+            return '#EXT-X-PLAYLIST-TYPE:VOD';
+          }
           return line.replace(/URI="([^"]+)"/g, (match, uri) => {
             try {
               const absUrl = new URL(uri, streamUrl).toString();
@@ -402,6 +424,16 @@ router.get('/proxy-stream', async (req: Request, res: Response) => {
           return line;
         }
       });
+
+      const hasSegments = rewrittenLines.some((l) => !l.startsWith('#') && l.trim().length > 0);
+      if (hasSegments) {
+        if (!rewrittenLines.some((l) => l.startsWith('#EXT-X-PLAYLIST-TYPE:'))) {
+          rewrittenLines.splice(1, 0, '#EXT-X-PLAYLIST-TYPE:VOD');
+        }
+        if (!rewrittenLines.some((l) => l.trim() === '#EXT-X-ENDLIST')) {
+          rewrittenLines.push('#EXT-X-ENDLIST');
+        }
+      }
 
       const rewrittenPlaylist = rewrittenLines.join('\n');
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
