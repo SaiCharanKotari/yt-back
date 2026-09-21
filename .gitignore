@@ -1,0 +1,65 @@
+# =======================================================
+# ClipFlow Backend .gitignore
+# =======================================================
+
+# --- Environment & Sensitive Credentials ---
+.env
+.env.*
+.env.local
+!.env.example
+atlas-credentials.env
+cookies.txt
+*.pem
+*.key
+
+# --- Dependencies & Build Outputs ---
+node_modules/
+dist/
+dist-ssr/
+build/
+
+# --- Temp, Cache & Runtime Data ---
+temp/
+data/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Downloads & User Media Storage ---
+public/downloads/*
+!public/downloads/.gitkeep
+
+# --- Executables, Binaries & Installers (Bypass GitHub 100MB limit) ---
+*.exe
+*.zip
+*.tar.gz
+*.dll
+*.iso
+*.dmg
+
+# --- Media files ---
+*.mp4
+*.m4a
+*.webm
+*.mkv
+*.part
+temp_test_clip.*
+
+# --- Scratch, Dump & Ad-hoc Test Scripts ---
+dqw_info.json
+info.json
+test-*.mjs
+test-*.cjs
+test-*.ts
+show-script.mjs
+check-db.ts
+
+# --- OS & Editor Cache ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

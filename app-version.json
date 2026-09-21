@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "minRequiredVersion": "1.0.0",
+  "downloadUrl": "/public/downloads/ClipFlowHelper.exe",
+  "changelog": "Initial release with 4K GPU rendering, sub-second precision clipping, and background listener.",
+  "releaseDate": "2026-09-14"
+}
