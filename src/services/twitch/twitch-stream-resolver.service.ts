@@ -267,6 +267,9 @@ async function resolveCloudFrontDvrFromNode(node: any, quality?: string): Promis
     const cleanQ = quality.toLowerCase().replace('p', '');
     candidates.push(`https://${baseDomain}/${basePath}/${cleanQ}p60/index-dvr.m3u8`);
     candidates.push(`https://${baseDomain}/${basePath}/${cleanQ}p30/index-dvr.m3u8`);
+    candidates.push(`https://${baseDomain}/${basePath}/${cleanQ}p/index-dvr.m3u8`);
+    candidates.push(`https://${baseDomain}/${basePath}/${cleanQ}p30/index.m3u8`);
+    candidates.push(`https://${baseDomain}/${basePath}/${cleanQ}p60/index.m3u8`);
   }
   candidates.push(`https://${baseDomain}/${basePath}/chunked/index-dvr.m3u8`);
   candidates.push(`https://${baseDomain}/${basePath}/chunked/index-muted.m3u8`);

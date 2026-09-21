@@ -22,6 +22,7 @@ export interface TwitchFFmpegExportOptions {
   tempRawPath?: string;
   trimStart?: number;
   trimEnd?: number;
+  quality?: string;
   format?: string;
   audioQuality?: string | number;
   audioBitrate?: string;
@@ -46,7 +47,8 @@ export interface MediaValidationResult {
 
 export class TwitchFFmpegExporterService {
   /**
-   * Inspects a rendered media file using FFmpeg stderr to verify stream integrity
+   * Validates an exported video/audio file to ensure it exists, is non-zero,
+   * contains expected streams, and is not a corrupted stub.
    */
   static async validateMedia(filePath: string, ffmpegBin: string, expectedDuration?: number): Promise<MediaValidationResult> {
     if (!fs.existsSync(filePath)) {
@@ -55,18 +57,12 @@ export class TwitchFFmpegExporterService {
 
     const stat = fs.statSync(filePath);
     if (stat.size < 1000) {
-      return { isValid: false, sizeBytes: stat.size, hasVideo: false, hasAudio: false, error: `File is too small (${stat.size} bytes)` };
+      return { isValid: false, sizeBytes: stat.size, hasVideo: false, hasAudio: false, error: `File too small (${stat.size} bytes)` };
     }
 
     try {
-      // ffmpeg -i <file> exits with code 1 after outputting stream metadata
-      let outputText = '';
-      try {
-        const { stderr } = await execAsync(`"${ffmpegBin}" -i "${filePath}"`);
-        outputText = stderr;
-      } catch (procErr: any) {
-        outputText = procErr.stderr || procErr.stdout || '';
-      }
+      const probeCmd = `"${ffmpegBin}" -i "${filePath}"`;
+      const { stderr: outputText } = await execAsync(probeCmd).catch((err: any) => ({ stderr: err.message || '' }));
 
       const hasVideo = /Stream #0:\d+.*Video:/i.test(outputText);
       const hasAudio = /Stream #0:\d+.*Audio:/i.test(outputText);
@@ -129,6 +125,7 @@ export class TwitchFFmpegExporterService {
       outputPath,
       trimStart = 0,
       trimEnd,
+      quality,
       format = 'mp4',
       audioBitrate = '192k',
       aspectRatio,
@@ -147,10 +144,19 @@ export class TwitchFFmpegExporterService {
 
     const safeAudioBitrate = audioBitrate && String(audioBitrate).endsWith('k') ? audioBitrate : '192k';
 
+    // Parse target resolution
+    const targetHeight = quality ? parseInt(quality.replace(/[^\d]/g, ''), 10) : null;
+    const isStreamExactTarget = Boolean(
+      targetHeight &&
+      (hlsStreamUrl.includes(`/${targetHeight}p`) || (targetHeight >= 1080 && hlsStreamUrl.includes('/chunked/')))
+    );
+    const needsDownscale = Boolean(targetHeight && targetHeight < 1080 && !isStreamExactTarget);
+
     console.log('\n' + '─'.repeat(60));
     console.log(`🎬 [Twitch FFmpeg Exporter] Rendering timeline clip:`);
     console.log(`   • Timeline: ${trimStart}s -> ${trimEnd !== undefined ? `${trimEnd}s` : 'End'} (Duration: ${duration !== undefined ? `${duration}s` : 'Full'})`);
-    console.log(`   • Target Format: ${format} | Audio Bitrate: ${safeAudioBitrate}`);
+    console.log(`   • Target Format: ${format} | Quality: ${quality || 'source'} (Target Height: ${targetHeight || 'auto'})`);
+    console.log(`   • Downscale Needed: ${needsDownscale ? `Yes -> ${targetHeight}p` : 'No (Direct/Native Stream)'}`);
     console.log(`   • Crop Filter: ${needsCrop ? filterString : 'None (Direct Frame)'}`);
     console.log(`   • Output Path: ${outputPath}`);
     console.log('─'.repeat(60));
@@ -184,6 +190,10 @@ export class TwitchFFmpegExporterService {
     // ── 2. VIDEO EXPORT WITH ASPECT RATIO / CROP ───────────────────────────────
     if (needsCrop) {
       console.log(`[Twitch FFmpeg Exporter] Crop/Pad requested. Executing H.264 + AAC transcode with filter...`);
+      let effectiveCropFilter = filterString;
+      if (needsDownscale && targetHeight) {
+        effectiveCropFilter = `${filterString},scale=-2:${targetHeight}:flags=lanczos`;
+      }
       const transcodeCropArgs: string[] = [
         `"${ffmpegBin}"`,
         '-y',
@@ -194,7 +204,7 @@ export class TwitchFFmpegExporterService {
         transcodeCropArgs.push(`-t ${duration}`);
       }
       transcodeCropArgs.push(
-        `-vf "${filterString}"`,
+        `-vf "${effectiveCropFilter}"`,
         '-c:v libx264',
         '-preset fast',
         '-crf 19',
@@ -218,47 +228,49 @@ export class TwitchFFmpegExporterService {
 
     // ── 3. STANDARD VIDEO EXPORT (Fast Copy with Fallback to Transcode) ────────
     let modeUsed = 'fast-copy';
-    let copySuccess = false;
 
-    // Attempt Fast Stream Copy first for near-instant rendering
-    try {
-      console.log(`[Twitch FFmpeg Exporter] 🚀 Attempting ultrafast H.264+AAC stream copy...`);
-      const fastCopyArgs: string[] = [
-        `"${ffmpegBin}"`,
-        '-y',
-        `-ss ${trimStart}`,
-        `-i "${hlsStreamUrl}"`,
-      ];
-      if (duration !== undefined) {
-        fastCopyArgs.push(`-t ${duration}`);
+    // Attempt Fast Stream Copy first if downscaling is not required
+    if (!needsDownscale) {
+      try {
+        console.log(`[Twitch FFmpeg Exporter] 🚀 Attempting ultrafast H.264+AAC stream copy (matches target quality)...`);
+        const fastCopyArgs: string[] = [
+          `"${ffmpegBin}"`,
+          '-y',
+          `-ss ${trimStart}`,
+          `-i "${hlsStreamUrl}"`,
+        ];
+        if (duration !== undefined) {
+          fastCopyArgs.push(`-t ${duration}`);
+        }
+        fastCopyArgs.push(
+          '-c copy',
+          '-map 0:v:0',
+          '-map 0:a:0?',
+          '-movflags +faststart',
+          '-bsf:a aac_adtstoasc',
+          `"${outputPath}"`
+        );
+
+        await execAsync(fastCopyArgs.join(' '), { timeout: 30000 });
+
+        // Validate stream copy output
+        const copyVal = await this.validateMedia(outputPath, ffmpegBin, duration);
+        if (copyVal.isValid && copyVal.hasVideo) {
+          console.log(`[Twitch FFmpeg Exporter] ✅ Stream copy validated successfully (${(copyVal.sizeBytes / (1024 * 1024)).toFixed(2)} MB, ${copyVal.durationSeconds?.toFixed(2)}s)`);
+          return { outputPath, mode: 'fast-copy', validation: copyVal };
+        } else {
+          console.warn(`[Twitch FFmpeg Exporter] ⚠️ Stream copy output validation failed (${copyVal.error}). Falling back to transcode...`);
+        }
+      } catch (copyErr: any) {
+        console.warn(`[Twitch FFmpeg Exporter] ⚠️ Fast stream copy failed: ${copyErr.message}. Falling back to H.264 + AAC transcode...`);
       }
-      fastCopyArgs.push(
-        '-c copy',
-        '-map 0:v:0',
-        '-map 0:a:0?',
-        '-movflags +faststart',
-        '-bsf:a aac_adtstoasc',
-        `"${outputPath}"`
-      );
-
-      await execAsync(fastCopyArgs.join(' '), { timeout: 30000 });
-
-      // Validate stream copy output
-      const copyVal = await this.validateMedia(outputPath, ffmpegBin, duration);
-      if (copyVal.isValid && copyVal.hasVideo) {
-        console.log(`[Twitch FFmpeg Exporter] ✅ Stream copy validated successfully (${(copyVal.sizeBytes / (1024 * 1024)).toFixed(2)} MB, ${copyVal.durationSeconds?.toFixed(2)}s)`);
-        copySuccess = true;
-        return { outputPath, mode: 'fast-copy', validation: copyVal };
-      } else {
-        console.warn(`[Twitch FFmpeg Exporter] ⚠️ Stream copy output validation failed (${copyVal.error}). Falling back to transcode...`);
-      }
-    } catch (copyErr: any) {
-      console.warn(`[Twitch FFmpeg Exporter] ⚠️ Fast stream copy failed: ${copyErr.message}. Falling back to H.264 + AAC transcode...`);
+    } else {
+      console.log(`[Twitch FFmpeg Exporter] Target resolution ${targetHeight}p requested from stream. Encoding at exact ${targetHeight}p...`);
     }
 
-    // ── 4. TRANSCODE FALLBACK (Guaranteed Clean Standard H.264 + AAC MP4) ──────
-    modeUsed = 'transcode-h264-aac';
-    if (onProgress) onProgress('⚙️ Encoding high-quality H.264 video...', 60);
+    // ── 4. TRANSCODE (Guaranteed Clean Standard H.264 + AAC MP4 with Scaling) ──────
+    modeUsed = needsDownscale ? `transcode-scale-${targetHeight}p` : 'transcode-h264-aac';
+    if (onProgress) onProgress(needsDownscale ? `⚙️ Scaling & encoding ${targetHeight}p video...` : '⚙️ Encoding high-quality H.264 video...', 60);
 
     const transcodeArgs: string[] = [
       `"${ffmpegBin}"`,
@@ -268,6 +280,9 @@ export class TwitchFFmpegExporterService {
     ];
     if (duration !== undefined) {
       transcodeArgs.push(`-t ${duration}`);
+    }
+    if (needsDownscale && targetHeight) {
+      transcodeArgs.push(`-vf "scale=-2:${targetHeight}:flags=lanczos"`);
     }
     transcodeArgs.push(
       '-c:v libx264',

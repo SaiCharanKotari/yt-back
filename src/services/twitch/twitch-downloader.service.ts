@@ -76,6 +76,7 @@ export class TwitchDownloaderService {
       outputPath: finalFile,
       trimStart: Number(trimStart) || 0,
       trimEnd: trimEnd !== undefined ? Number(trimEnd) : undefined,
+      quality,
       format,
       audioQuality,
       audioBitrate: String(audioBitrate || '192k'),
